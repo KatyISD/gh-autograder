@@ -1,9 +1,11 @@
+import datetime
 import json
 import os
+import yaml
 import subprocess
 import sys
-import yaml
 
+from pathlib import Path
 
 
 def normalize_tests(tests):
@@ -75,14 +77,41 @@ def load_io(tests):
 
 def main(): 
     # Check if tests.yaml or tests.yml exists in the current directory
-    if os.path.exists('tests.yaml'):
+    # or its __file__ parent, start with parent since that's more likely
+    parent = Path(__file__).parent
+    assignment_dir = parent / os.getenv('ASSIGNMENT', '')
+    
+    if (assignment_dir / 'tests.yaml').exists(): #os.path.exists('../tests.yaml'):
+        with (assignment_dir / 'tests.yaml').open('r', encoding="utf-8") as file:
+            tests = yaml.safe_load(file)
+    elif (assignment_dir / 'tests.yml').exists(): #os.path.exists('../tests.yml'):
+        with (assignment_dir / 'tests.yml').open('r', encoding="utf-8") as file:
+            tests = yaml.safe_load(file)
+    elif os.path.exists('tests.yaml'):
         with open('tests.yaml', 'r') as file:
             tests = yaml.safe_load(file)
     elif os.path.exists('tests.yml'):
         with open('tests.yml', 'r') as file:
             tests = yaml.safe_load(file)
     else:
-        # Just exit, it'll be a no test run
+        # Just exit, it'll be a no test run. Still needs to build
+        # result.json so runner knows nothing ran
+        data = {
+            "schema": "classroom50/result/v1",
+            "classroom": os.getenv('CLASSROOM', ''),
+            "assignment": os.getenv('ASSIGNMENT', ''),
+            "assignment_type": os.getenv('MODE', ''),
+            "owner": os.getenv('USERNAME') or os.getenv('USERNAME'),
+            "submission": os.getenv('SUBMISSION_TAG', ''),
+            "commit": os.getenv('COMMIT_URL', ''),
+            "release": os.getenv('RELEASE_URL', ''),
+            "review": os.getenv('REVIEW_URL') or os.getenv('COMMIT_URL', ''),
+            "datetime": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), 
+            "score": 0,
+            "max-score": 0,
+            "tests": []
+        }
+        Path('result.json').write_text(json.dumps(data, indent=2) + "\n")
         sys.exit(0)
 
     tests = normalize_tests(tests)
@@ -94,18 +123,84 @@ def main():
         "tests_run": 0,
     }
 
+    test_info = []
+
     # Iterate through tests and run the individual tests
     for t in tests.get('tests', []):
         status["tests_run"] += 1
         status["points_available"] += t.get("points", 0)
 
+        test_results = {
+            "test-name": t.get("name", ""),
+            "passed": False,
+            "score": 0,
+            "max-score": t.get("points", 0),
+        }
+
         if t.get("type") == "io":
             result = test_io(t)
-            print(json.dumps(result, indent=4))
+            
+            if result["success"]:
+                status["points"] += t.get("points", 0)
+                test_results["passed"] = True
+                test_results["score"] = t.get("points", 0)
 
+            test_results["markdown"] = result.get("markdown", "")
         
+        test_info.append(test_results)
 
+    # Tests have run, create the results.json file
+    data = {
+        "schema": "classroom50/result/v1",
+        "classroom": os.getenv('CLASSROOM', ''),
+        "assignment": os.getenv('ASSIGNMENT', ''),
+        "assignment_type": os.getenv('MODE', ''),
+        "owner": os.getenv('USERNAME') or os.getenv('USERNAME'),
+        "submission": os.getenv('SUBMISSION_TAG', ''),
+        "commit": os.getenv('COMMIT_URL', ''),
+        "release": os.getenv('RELEASE_URL', ''),
+        "review": os.getenv('REVIEW_URL') or os.getenv('COMMIT_URL', ''),
+        "datetime": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), 
+        "score": status["points"],
+        "max-score": status["points_available"],
+        "tests": test_info,
+    }
 
+    # Build the markdown for results
+    test_markdown = ''
+    results_header = '## Autograder Results\n\n'
+    results_header += f"<table><tr><th>Test Name</th><th>Passed</th><th>Score</th><th>Points</th><th>Message</th></tr>\n\n"
+
+    for test in test_info:
+        test_markdown += f"#### {test['test-name']}\n\n"
+        test_markdown += f"**Score:** {test['score']} / {test['max-score']}\n\n"
+        test_markdown += f"**Passed:** {'Yes' if test['passed'] else 'No'}\n\n"
+
+        test_markdown += test['markdown'] + "\n\n"
+
+        results_header += f"<tr><td>{test['test-name']}</td><td>"
+        
+        if test['score'] == test['max-score']:
+            results_header += ":white_check_mark:"
+        elif test['score'] == 0:
+            results_header += ":no_entry_sign:"
+        else:
+            results_header += ":warning:"
+
+        results_header += f"</td><td>{test['score']}</td><td>{test['max-score']}</td><td>{test['message']}</td></tr>"
+    
+    results_header += f"<tr><td><b>Totals</b></td><td></td><td><b>{status['points']}</b></td><td><b>{status['points_available']}</b></td></tr>"
+    results_header += f"</table>\n\n"
+
+    results_header += f"---\n\n### Individual Tests\n\n"
+
+    # write the file
+    Path('result.json').write_text(json.dumps(data, indent=2) + "\n")
+
+    # Write the markdown file
+    md = results_header + test_markdown
+
+    Path('release-body.md').write_text(md)
 
 
 def test_io(test):
@@ -131,12 +226,16 @@ def test_io(test):
         "success": True, 
     }
     
-    # Copy data file?
-    if test.get("filename"):
-        if os.path.exists(test["filename"]):
-            os.remove(test["filename"])
-        with open(test["filename"], 'w') as f:
-            f.write(test.get("input", ""))
+    # Copy data file or stdin
+    stdin = ""
+    if test.get('input', ''):
+        if test.get("filename"):
+            if os.path.exists(test["filename"]):
+                os.remove(test["filename"])
+            with open(test["filename"], 'w') as f:
+                f.write(test.get("input", ""))
+        else:
+            stdin = test.get("input", "")
 
     # Run setup command
     if test.get("setup"):
@@ -171,7 +270,7 @@ def test_io(test):
     # Run the command
     if test.get("command"):
         try:
-            result = subprocess.run(test.get("command"), capture_output=True, text=True, shell=True)
+            result = subprocess.run(test.get("command"), capture_output=True, text=True, shell=True, input=stdin)
         except subprocess.TimeoutExpired as e:
             ret["command"]["exit"] = -1
             ret["command"]["stdout"] = e.stdout
@@ -200,25 +299,52 @@ def test_io(test):
 
     # Compare output
     if test.get("comparison") == "exact":
-        if ret["command"]["stdout"].rtrim() != test.get("output", "").rtrim():
+        expected = test.get('output', '')
+        actual = ret["command"]["stdout"]
+
+        if test.get('exact', {}).get('ignore-case', False):
+            expected = expected.lower()
+            actual = actual.lower()
+
+        if expected.rtrim() != actual.rtrim():
             ret["success"] = False
             ret["message"] = "Output did not match expected output."
-            ret["markdown"] = f"Output did not match expected output.\n\nExpected:\n```\n{test.get('output', '')}\n```\n\nGot:\n```\n{ret['command']['stdout']}\n```"
+            ret["markdown"] = f"Output did not match expected output.\n\nExpected:\n```\n{test.get('output', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
             return ret
+        else:
+            ret["success"] = True
+            ret["message"] = "Output matched expected output."
+            ret["markdown"] = f"Output matched expected output.\n\nExpected:\n```\n{test.get('output', '')}\n```\n\nGot:\n```\n{ret['command']['stdout']}\n```"
 
     elif test.get("comparison") == "contains":
+        expected = test.get("output", "")
+        actual = ret["command"]["stdout"]
+
+        if test.get('contains', {}).get('ignore-case', False):
+            expected = expected.lower()
+            actual = actual.lower()
+
         if test.get("output", "") not in ret["command"]["stdout"]:
             ret["success"] = False
             ret["message"] = "Output did not contain expected output."
-            ret["markdown"] = f"Output did not contain expected output.\n\nExpected to contain:\n```\n{test.get('output', '')}\n```\n\nGot:\n```\n{ret['command']['stdout']}\n```"
+            ret["markdown"] = f"Output did not contain expected output.\n\nExpected to contain:\n```\n{test.get('output', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
             return ret
+        else:
+            ret["success"] = True
+            ret["message"] = "Output contained expected output."
+            ret["markdown"] = f"Output contained expected output.\n\nExpected to contain:\n```\n{test.get('output', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
 
     elif test.get("comparison") == "regex":
         import re
         if not re.search(test.get("regex", ""), ret["command"]["stdout"]):
             ret["success"] = False
             ret["message"] = "Output did not match expected regex."
-            ret["markdown"] = f"Output did not match expected regex.\n\nExpected to match:\n```\n{test.get('regex', '')}\n```\n\nGot:\n```\n{ret['command']['stdout']}\n```"
+            ret["markdown"] = f"Output did not match expected regex.\n\nExpected to match:\n```\n{test.get('regex', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
+            return ret
+        else:
+            ret["success"] = True
+            ret["message"] = "Output matched expected regex."
+            ret["markdown"] = f"Output matched expected regex.\n\nExpected to match:\n```\n{test.get('regex', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
 
     elif test.get("comparison") == "loose":
         output = ret["command"]["stdout"].rstrip()
@@ -257,14 +383,14 @@ def test_io(test):
         else:
             ret["success"] = True
             ret["message"] = "Output matched expected output."
-            ret["markdown"] = f"Output matched expected output.\n\nExpected:\n```\n{test.get('output', '')}\n```\n\nGot:\n```\n{ret['command']['stdout']}\n```"
+            ret["markdown"] = f"Output matched expected output.\n\n```\n{ret['command']['stdout']}\n```"
 
     else:
         ret["success"] = False
         ret["message"] = f"Unknown comparison method: {test.get('comparison')}"
         ret["markdown"] = f"Unknown comparison method: {test.get('comparison')}"
+
+    
     return ret
 
-# if __name__ == "__main__":
-#     main()
 main()

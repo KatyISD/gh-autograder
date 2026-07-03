@@ -1,3 +1,7 @@
-*.yml
-*.java
-*.class
+*
+
+!*/
+
+!README.md
+!autograder.py
+!autograde-runner.yaml
