@@ -397,6 +397,13 @@ def test_junit4(test):
     xml_files = list(surefire_reports_dir.glob('TEST-*.xml'))
     
     if not xml_files:
+        print('No XML Files Found\n')
+        print('Maven Results')
+        print(result)
+
+        print('pom.xml contents')
+        print(Path('pom.xml').read_text())
+
         ret["success"] = False
         ret["message"] = "No JUnit test results found."
         ret["markdown"] = f"No JUnit test results found.\n\nNo XML reports found\n\n```\n{result.stderr}\n```"
@@ -607,21 +614,55 @@ def build_pom(test):
     test_dir = test.get('test-path', '.')
 
     lib_dir = test.get('lib-path', '')
-    lib_dir_full = Path(lib_dir).resolve()
 
-    if lib_dir and lib_dir_full.is_dir():
+    if lib_dir and Path(lib_dir).is_dir():
+        lib_dir_full = Path(lib_dir).resolve()
+
+        # additionalClasspathElement/-cp add each entry as a literal directory
+        # or jar path - neither expands jars sitting inside a directory - so
+        # each jar has to be listed individually. The directory itself is kept
+        # too, in case it also has loose .class files.
+        lib_classpath_entries = sorted(str(p) for p in lib_dir_full.glob('*.jar')) + [str(lib_dir_full)]
+
         lib_dir_surefire = """
             <additionalClasspathElements>
-                <addionalClasspathElement>""" + str(lib_dir_full) + """</additionalClasspathElement>
+""" + "\n".join(
+            "                <additionalClasspathElement>" + entry + "</additionalClasspathElement>"
+            for entry in lib_classpath_entries
+        ) + """
             </additionalClasspathElements>
             """
+        # -cp on the compiler plugin replaces the whole classpath rather than
+        # appending to it, so the dependency classpath has to be captured via
+        # maven-dependency-plugin first and combined with the lib dir here,
+        # otherwise junit/hamcrest silently drop off the compile classpath.
         lib_dir_compiler = """
             <arg>-cp</arg>
-            <arg>""" + str(lib_dir_full) + """</arg>
+            <arg>${compile.classpath}${path.separator}""" + os.pathsep.join(lib_classpath_entries) + """</arg>
+            """
+        dependency_plugin = """
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>build-classpath</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>build-classpath</goal>
+                        </goals>
+                        <configuration>
+                            <outputProperty>compile.classpath</outputProperty>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             """
     else:
         lib_dir_surefire = ""
         lib_dir_compiler = ""
+        dependency_plugin = ""
 
     # Get the junit version
     junit_version = test.get('type', 'junit')
@@ -672,7 +713,7 @@ def build_pom(test):
         <sourceDirectory>""" + src_dir + """</sourceDirectory>
         <testSourceDirectory>""" + test_dir + """</testSourceDirectory>
 
-        <plugins>
+        <plugins>""" + dependency_plugin + """
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.14.0</version>
