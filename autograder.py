@@ -274,7 +274,6 @@ def test_io(test):
             ret["markdown"] = f"Output contained expected output.\n\nInput:\n```{test.get('input', '')}\n```\n\nExpected to contain:\n```\n{test.get('output', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
 
     elif test.get("comparison") == "regex":
-        import re
         if not re.search(test.get("regex", ""), ret["command"]["stdout"]):
             ret["success"] = False
             ret["message"] = "Output did not match regular expression"
