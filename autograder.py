@@ -715,7 +715,7 @@ def copy_support_files():
         assignment_dir(), 
         Path.cwd(), 
         dirs_exist_ok=True, 
-        ignore=shutil.ignore_patterns('tests.yaml', 'tests.yml')
+        ignore=shutil.ignore_patterns('tests.yaml', 'tests.yml', 'test.yaml', 'test.yml')
     )
     print('After copy')
     for item in Path('.').iterdir():
@@ -853,22 +853,15 @@ def build_pom(test):
     Path('pom.xml').write_text(xml)
 
 def main(): 
-    # Check if tests.yaml or tests.yml exists in the current directory
+    # Check if a tests/test yaml/yml file exists in the current directory
     # or its __file__ parent, start with parent since that's more likely
     support_dir = assignment_dir()
-    
-    if support_dir and (support_dir / 'tests.yaml').exists(): #os.path.exists('../tests.yaml'):
-        with (support_dir / 'tests.yaml').open('r', encoding="utf-8") as file:
-            tests = yaml.safe_load(file)
-    elif support_dir and (support_dir / 'tests.yml').exists(): #os.path.exists('../tests.yml'):
-        with (support_dir / 'tests.yml').open('r', encoding="utf-8") as file:
-            tests = yaml.safe_load(file)
-    elif os.path.exists('tests.yaml'):
-        with open('tests.yaml', 'r') as file:
-            tests = yaml.safe_load(file)
-    elif os.path.exists('tests.yml'):
-        with open('tests.yml', 'r') as file:
-            tests = yaml.safe_load(file)
+    names = ('tests.yaml', 'tests.yml', 'test.yaml', 'test.yml')
+    candidates = [support_dir / name for name in names if support_dir] + [Path(name) for name in names]
+
+    tests_path = next((p for p in candidates if p.exists()), None)
+    if tests_path:
+        tests = yaml.safe_load(tests_path.read_text(encoding="utf-8"))
     else:
         # Just exit, it'll be a no test run. Still needs to build
         # result.json so runner knows nothing ran
@@ -888,6 +881,7 @@ def main():
             "tests": []
         }
         Path('result.json').write_text(json.dumps(data, indent=2) + "\n")
+        Path('release-body.md').write_text('## Autograder Results\n\nNo test definition file found in the autograding repository. Please check with your instructor.\n')
         sys.exit(0)
 
     copy_support_files()
