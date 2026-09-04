@@ -278,11 +278,11 @@ def test_io(test):
             ret["success"] = False
             ret["message"] = "Output did not match regular expression"
             ret["markdown"] = markdown_io(
-                mesasge = "Output did not match regular expression",
+                message = "Output did not match regular expression",
                 input =  test.get('regex'),
                 output = ret['command']['stdout'],
-                expected = text.get('output', '')
-            )         
+                expected = test.get('output', '')
+            )
         else:
             ret["success"] = True
             ret["message"] = "Output matched expected regular expression"
@@ -350,65 +350,93 @@ def test_io(test):
     
     return ret
 
-def test_junit4(test):
+_MAVEN_HELP_BOILERPLATE = (
+    'Re-run Maven using',
+    'To see the full stack trace',
+    'For more information about the errors',
+    '-> [Help',
+    'http://cwiki.apache.org',
+)
+_MAVEN_DIVIDER = re.compile(r'^\[INFO\]\s*-{5,}\s*$')
+
+def summarize_maven_failure(output):
     """
-    Runs the JUnit tests on submitted code. The junit jars can be either
-    in the lib-path defined or already on the image. 
+    Maven's full build log is mostly plugin/dependency-resolution noise -
+    what the student actually needs to see is just the compiler error (or
+    whichever [ERROR] lines explain the failure), not the whole transcript.
     """
-    # Set defaults
+    lines = output.splitlines()
+
+    # Most common case: a compile error, bounded by the two "----" dividers
+    # Maven prints immediately before and after the "COMPILATION ERROR" block.
+    start = next((i for i, line in enumerate(lines) if 'COMPILATION ERROR' in line), None)
+    if start is not None:
+        end = len(lines)
+        seen_divider = False
+        for i in range(start + 1, len(lines)):
+            if _MAVEN_DIVIDER.match(lines[i]):
+                if seen_divider:
+                    end = i + 1
+                    break
+                seen_divider = True
+        return '\n'.join(lines[start:end]).strip()
+
+    # Otherwise, fall back to just the [ERROR] lines, skipping Maven's
+    # generic "how to get more help" boilerplate at the very end.
+    error_lines = [
+        line for line in lines
+        if line.strip().startswith('[ERROR]') and not any(marker in line for marker in _MAVEN_HELP_BOILERPLATE)
+    ]
+    if error_lines:
+        return '\n'.join(error_lines).strip()
+
+    return output.strip()
+
+def score_xml_test_results(xml_files, test, result, label='Test', on_missing=None, summarize_build_output=None):
+    """
+    Shared scoring/markdown logic for any test type that reports results as
+    JUnit-style XML (testsuite/testcase, with failure/error/skipped children).
+    Used by both the JUnit runner and the Python unittest runner so the two
+    produce matching output.
+    """
     ret = {
-        "setup": {
-            "exit": 0,
-            "stdout": "",
-            "stderr": "",
-        },
         "command": {
-            "exit": 0,
-            "stdout": "",
-            "stderr": "",
+            "exit": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
         },
         "points": test.get('points', 0),    # Total points available
         "score": 0,     # Points scored by student submission
         "message": "",
         "markdown": "",
-        "success": True, 
+        "success": True,
     }
-    
-    build_pom(test)
 
-    mvn_command = ['mvn', 'clean', 'test']
-    if test.get('test-class', '') != '':
-        mvn_command.append(f'-Dtest={test.get("test-class")}')
-    
-    try:
-        result = subprocess.run(mvn_command, capture_output=True, text=True, shell=False, timeout=test.get("timeout", 60))
-    except subprocess.TimeoutExpired as e:
-        ret["command"]["exit"] = -1
-        ret["command"]["stdout"] = e.stdout
-        ret["command"]["stderr"] = e.stderr
-        ret["success"] = False
-        ret["message"] = f"JUnit command timed out after {test.get('timeout', 0)} seconds."
-        ret["markdown"] = f"JUnit command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```"
-        return ret
-
-    # Glob for the xml files
-    surefire_reports_dir = Path('target/surefire-reports')
-    xml_files = list(surefire_reports_dir.glob('TEST-*.xml'))
-    
     if not xml_files:
         print('No XML Files Found\n')
-        print('Maven Results')
+        print(f'{label} Results')
         print(result)
 
-        print('pom.xml contents')
-        print(Path('pom.xml').read_text())
+        if on_missing:
+            on_missing()
 
         ret["success"] = False
-        ret["message"] = "No JUnit test results found."
-        ret["markdown"] = f"No JUnit test results found.\n\nNo XML reports found\n\n```\n{result.stderr}\n```"
+
+        # A non-zero exit with no XML reports almost always means the build/
+        # compile step itself failed before any tests could run, rather than
+        # the tests running and simply producing no results. Call that out
+        # distinctly so it's not confused with "0 tests found".
+        if result.returncode != 0:
+            build_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+            if summarize_build_output:
+                build_output = summarize_build_output(build_output)
+            ret["message"] = f"{label} build failed"
+            ret["markdown"] = f"**{label} build failed** (exit code {result.returncode}) before any tests could run.\n\n```\n{build_output}\n```"
+        else:
+            ret["message"] = f"No {label} test results found."
+            ret["markdown"] = f"No {label} test results found.\n\nNo XML reports found\n\n```\n{result.stderr}\n```"
         return ret
 
-    test_cases = []
     test_results = {
         'count': 0,
         'failures': 0,
@@ -440,7 +468,7 @@ def test_junit4(test):
             if failure is not None:
                 test_result['passed'] = False
                 test_result['status'] = 'failure'
-                test_result['message'] = failure.get('message', '')                
+                test_result['message'] = failure.get('message', '')
                 test_results['failures'] += 1
                 ret['success'] = False
             elif error is not None:
@@ -464,11 +492,11 @@ def test_junit4(test):
             test_results['count'] += 1
             test_results['time'] += float(testcase.get('time', 0))
             test_results['tests'].append(test_result)
-    
+
     if test_results['count'] == 0:
         ret["success"] = False
-        ret["message"] = "No JUnit test cases found."
-        ret["markdown"] = f"No JUnit test cases found.\n\nNo tests found in XM L files\n\n```\n{result.stderr}\n```"
+        ret["message"] = f"No {label} test cases found."
+        ret["markdown"] = f"No {label} test cases found.\n\nNo tests found in XML files\n\n```\n{result.stderr}\n```"
         return ret
 
     # Build the message for the results header
@@ -486,11 +514,10 @@ def test_junit4(test):
 
     # Have to go back through now that we have them all and assign points
     # and build markdown table. There is already some data coming out of
-    # the test results returned, so we don't need to duplicated that. 
-    total_points = 0
+    # the test results returned, so we don't need to duplicated that.
     total_tests = test_results['count']
     md = f"<table>\n\t<tr>\n\t\t<th>Test Name</th>\n\t\t<th>Results</th>{ '<th>Points</th>' if test.get('partial-credit', True) else '' }\n\t\t<th>Message</th>\n\t</tr>\n"
-    
+
     for t in test_results['tests']:
         partial_points = 0
         md += f"\t<tr>\n\t\t<td>{t['name']}</td>\n\t\t<td>"
@@ -538,12 +565,99 @@ def test_junit4(test):
     test_results['markdown'] = md
     ret['markdown'] = md
 
-    # print(test_cases)
-    # print(json.dumps(test_results, indent=2))
+    return ret
 
-    subprocess.run(['mvn', 'clean'], capture_output=True, text=True, shell=False) 
+def test_junit4(test):
+    """
+    Runs the JUnit tests on submitted code. The junit jars can be either
+    in the lib-path defined or already on the image.
+    """
+    build_pom(test)
+
+    mvn_command = ['mvn', 'clean', 'test']
+    if test.get('test-class', '') != '':
+        mvn_command.append(f'-Dtest={test.get("test-class")}')
+
+    try:
+        result = subprocess.run(mvn_command, capture_output=True, text=True, shell=False, timeout=test.get("timeout", 60))
+    except subprocess.TimeoutExpired as e:
+        return {
+            "command": {"exit": -1, "stdout": e.stdout, "stderr": e.stderr},
+            "points": test.get('points', 0),
+            "score": 0,
+            "success": False,
+            "message": f"JUnit command timed out after {test.get('timeout', 0)} seconds.",
+            "markdown": f"JUnit command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```",
+        }
+
+    # Glob for the xml files
+    surefire_reports_dir = Path('target/surefire-reports')
+    xml_files = list(surefire_reports_dir.glob('TEST-*.xml'))
+
+    def print_pom_debug():
+        print('pom.xml contents')
+        print(Path('pom.xml').read_text())
+
+    ret = score_xml_test_results(
+        xml_files, test, result,
+        label='JUnit',
+        on_missing=print_pom_debug,
+        summarize_build_output=summarize_maven_failure,
+    )
+
+    subprocess.run(['mvn', 'clean'], capture_output=True, text=True, shell=False)
     Path('pom.xml').unlink()  # Clean up the pom.xml after building it
-    # print(json.dumps(ret, indent=2))
+    return ret
+
+def test_python_unittest(test):
+    """
+    Runs Python unittest-based tests against the student's submission.
+    Discovery mirrors `python -m unittest discover` (test-path/test-pattern),
+    or a specific dotted test target can be given via test-class, same as
+    JUnit's test-class. Results come back as JUnit-style XML via the
+    xmlrunner package so they can be scored with the same logic as JUnit.
+    """
+    ensure_package('xmlrunner', 'unittest-xml-reporting')
+
+    reports_dir = Path('xmlrunner-reports')
+    if reports_dir.exists():
+        shutil.rmtree(reports_dir)
+    reports_dir.mkdir(parents=True)
+
+    env = os.environ.copy()
+    lib_dir = test.get('lib-path', '')
+    if lib_dir and Path(lib_dir).is_dir():
+        env['PYTHONPATH'] = str(Path(lib_dir).resolve()) + os.pathsep + env.get('PYTHONPATH', '')
+
+    test_class = test.get('test-class', '')
+    if test_class:
+        command = [sys.executable, '-m', 'xmlrunner', '-o', str(reports_dir), test_class]
+    else:
+        command = [
+            sys.executable, '-m', 'xmlrunner', 'discover',
+            '-o', str(reports_dir),
+            '-s', test.get('test-path', '.'),
+            '-p', test.get('test-pattern', 'test*.py'),
+        ]
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, shell=False, env=env, timeout=test.get('timeout', 60))
+    except subprocess.TimeoutExpired as e:
+        return {
+            "command": {"exit": -1, "stdout": e.stdout, "stderr": e.stderr},
+            "points": test.get('points', 0),
+            "score": 0,
+            "success": False,
+            "message": f"Python unittest command timed out after {test.get('timeout', 0)} seconds.",
+            "markdown": f"Python unittest command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```",
+        }
+
+    xml_files = list(reports_dir.glob('TEST-*.xml')) if reports_dir.exists() else []
+
+    ret = score_xml_test_results(xml_files, test, result, label='Python unittest')
+
+    shutil.rmtree(reports_dir, ignore_errors=True)
+
     return ret
 
 def markdown_io(message = 'Output matched', input='', output='', expected=''):
@@ -819,8 +933,23 @@ def main():
             result = test_junit4(t)
             if result['success']:
                 test_results['passed'] = True
-            status['score'] += result.get('score', 0)
-            test_results['score'] = result.get('score', 0)
+            # Partial-credit scoring divides points across test cases, which
+            # always yields a float in Python (even for a whole number like
+            # 10.0) - result.json requires score/max-score to be strict ints,
+            # so round to a whole point here before it's ever written out.
+            score = round(result.get('score', 0))
+            status['score'] += score
+            test_results['score'] = score
+
+            test_results['markdown'] = result.get('markdown', '')
+            test_results['message'] = result.get('message', '')
+        elif t.get('type') in ['unittest', 'python', 'pyunit']:
+            result = test_python_unittest(t)
+            if result['success']:
+                test_results['passed'] = True
+            score = round(result.get('score', 0))
+            status['score'] += score
+            test_results['score'] = score
 
             test_results['markdown'] = result.get('markdown', '')
             test_results['message'] = result.get('message', '')
