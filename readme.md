@@ -194,3 +194,5 @@ It isn't active here - copy it into your `classroom50` repository as `.github/wo
 - `<classroom>/autograders/<assignment-slug>/autograder.py`
 
 To keep a specific folder's copy from being overwritten, drop an empty `.autograder-sync-ignore` file in it (works in either a classroom folder or an `autograders/<slug>/` folder). You can also skip whole top-level classroom folders for a single run with the workflow's `extra_excludes` input.
+
+Once it pushes an update, it also triggers `publish-pages.yaml` directly (via `gh workflow run`) so the republished files show up on GH Pages right away, since a push made with the default `GITHUB_TOKEN` doesn't fire that workflow's own `push` trigger. This relies on `publish-pages.yaml` already accepting `workflow_dispatch` - no other setup needed.

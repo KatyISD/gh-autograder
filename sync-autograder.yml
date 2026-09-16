@@ -30,6 +30,11 @@
 #
 # You can also pass a one-off, comma-separated list of top-level folder
 # names via the `extra_excludes` input when running the workflow manually.
+#
+# After a successful push, this also dispatches publish-pages.yaml (which
+# must already define `on: workflow_dispatch`) so the updated files get
+# republished right away, since a push made with GITHUB_TOKEN does not
+# trigger that workflow's own `push` trigger.
 
 name: Sync autograder.py
 
@@ -48,6 +53,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   sync:
@@ -119,3 +125,10 @@ jobs:
           git add -A -- ':(exclude,glob)**/.autograder-sync-ignore'
           git commit -m "Sync autograder.py from KatyISD/gh-autograder"
           git push
+
+      - name: Trigger publish-pages
+        if: steps.sync.outputs.changed == '1' && inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish-pages.yaml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
