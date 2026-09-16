@@ -640,6 +640,28 @@ def test_python_unittest(test):
             '-p', test.get('test-pattern', 'test*.py'),
         ]
 
+    # Run setup command, if it's there
+    setup_command = test.get('setup', '')
+    if setup_command:
+        setup_result = subprocess.run(
+            setup_command,
+            capture_output=True,
+            text=True,
+            shell=True,
+            env=env,
+            timeout=test.get('setup-timeout', 60)
+        )
+
+        if setup_result.returncode != 0:
+             return {
+                "command": {"exit": setup_result.returncode, "stdout": setup_result.stdout, "stderr": setup_result.stderr},
+                "points": test.get("points", 0),
+                "score": 0,
+                "success": False,
+                "message": "Setup command failed before running tests.",
+                "markdown": f"Setup command failed...\n\n```{setup_result.stderr}```",
+            }
+
     try:
         result = subprocess.run(command, capture_output=True, text=True, shell=False, env=env, timeout=test.get('timeout', 60))
     except subprocess.TimeoutExpired as e:
@@ -715,7 +737,7 @@ def copy_support_files():
         assignment_dir(), 
         Path.cwd(), 
         dirs_exist_ok=True, 
-        ignore=shutil.ignore_patterns('tests.yaml', 'tests.yml', 'test.yaml', 'test.yml')
+        ignore=shutil.ignore_patterns('tests.yaml', 'tests.yml')
     )
     print('After copy')
     for item in Path('.').iterdir():
@@ -853,15 +875,22 @@ def build_pom(test):
     Path('pom.xml').write_text(xml)
 
 def main(): 
-    # Check if a tests/test yaml/yml file exists in the current directory
+    # Check if tests.yaml or tests.yml exists in the current directory
     # or its __file__ parent, start with parent since that's more likely
     support_dir = assignment_dir()
-    names = ('tests.yaml', 'tests.yml', 'test.yaml', 'test.yml')
-    candidates = [support_dir / name for name in names if support_dir] + [Path(name) for name in names]
-
-    tests_path = next((p for p in candidates if p.exists()), None)
-    if tests_path:
-        tests = yaml.safe_load(tests_path.read_text(encoding="utf-8"))
+    
+    if support_dir and (support_dir / 'tests.yaml').exists(): #os.path.exists('../tests.yaml'):
+        with (support_dir / 'tests.yaml').open('r', encoding="utf-8") as file:
+            tests = yaml.safe_load(file)
+    elif support_dir and (support_dir / 'tests.yml').exists(): #os.path.exists('../tests.yml'):
+        with (support_dir / 'tests.yml').open('r', encoding="utf-8") as file:
+            tests = yaml.safe_load(file)
+    elif os.path.exists('tests.yaml'):
+        with open('tests.yaml', 'r') as file:
+            tests = yaml.safe_load(file)
+    elif os.path.exists('tests.yml'):
+        with open('tests.yml', 'r') as file:
+            tests = yaml.safe_load(file)
     else:
         # Just exit, it'll be a no test run. Still needs to build
         # result.json so runner knows nothing ran
@@ -881,7 +910,6 @@ def main():
             "tests": []
         }
         Path('result.json').write_text(json.dumps(data, indent=2) + "\n")
-        Path('release-body.md').write_text('## Autograder Results\n\nNo test definition file found in the autograding repository. Please check with your instructor.\n')
         sys.exit(0)
 
     copy_support_files()

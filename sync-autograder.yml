@@ -1,0 +1,121 @@
+# Sync autograder.py workflow
+#
+# This file is a TEMPLATE. It does nothing sitting here in the root of the
+# gh-autograder repo. To use it:
+#
+#   1. Copy this file into the target repository (e.g. your org's
+#      `classroom50` repo) at `.github/workflows/sync-autograder.yml`.
+#   2. Run it manually from that repo's Actions tab ("Run workflow").
+#
+# What it does
+# ------------
+# Walks the first-level subfolders of the repo it runs in (each one assumed
+# to be a classroom folder) and, for each one:
+#   - if `<classroom>/autograder.py` exists, overwrites it with the latest
+#     `autograder.py` from https://github.com/KatyISD/gh-autograder (main).
+#   - if `<classroom>/autograders/` exists, does the same for
+#     `<classroom>/autograders/<assignment>/autograder.py` in every
+#     subfolder of `autograders/`.
+#
+# Excluding folders
+# ------------------
+# `.git` and `.github` are always skipped.
+#
+# To permanently stop a folder's `autograder.py` from being overwritten,
+# just drop an empty `.autograder-sync-ignore` marker file in it. This works
+# at either level: put it in a classroom folder to leave that classroom's
+# own `autograder.py` alone, or in an `autograders/<slug>/` folder to leave
+# just that assignment's copy alone. (A marker in the classroom folder does
+# not affect its `autograders/<slug>/` subfolders — mark those separately.)
+#
+# You can also pass a one-off, comma-separated list of top-level folder
+# names via the `extra_excludes` input when running the workflow manually.
+
+name: Sync autograder.py
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_excludes:
+        description: "Comma-separated top-level folders to skip entirely for this run only"
+        required: false
+        default: ""
+      dry_run:
+        description: "Preview changes without committing/pushing"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch latest autograder.py
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/KatyISD/gh-autograder/main/autograder.py" -o /tmp/autograder.py
+
+      - name: Replace autograder.py in classroom folders
+        id: sync
+        run: |
+          set -euo pipefail
+
+          MARKER=".autograder-sync-ignore"
+
+          declare -A EXCLUDE
+          EXCLUDE[".git"]=1
+          EXCLUDE[".github"]=1
+
+          IFS=',' read -ra EXTRA <<< "${{ inputs.extra_excludes }}"
+          for item in "${EXTRA[@]}"; do
+            item="$(echo "$item" | xargs)"
+            [ -z "$item" ] && continue
+            EXCLUDE["$item"]=1
+          done
+
+          CHANGED=0
+
+          for entry in */ ; do
+            dir="${entry%/}"
+            [ -n "${EXCLUDE[$dir]:-}" ] && continue
+            [ -d "$dir" ] || continue
+
+            if [ ! -f "$dir/$MARKER" ] && [ -f "$dir/autograder.py" ] && ! cmp -s /tmp/autograder.py "$dir/autograder.py"; then
+              echo "Updating $dir/autograder.py"
+              cp /tmp/autograder.py "$dir/autograder.py"
+              CHANGED=1
+            fi
+
+            if [ -d "$dir/autograders" ]; then
+              for subentry in "$dir/autograders"/*/ ; do
+                [ -d "$subentry" ] || continue
+                sub="${subentry%/}"
+
+                if [ ! -f "$sub/$MARKER" ] && [ -f "$sub/autograder.py" ] && ! cmp -s /tmp/autograder.py "$sub/autograder.py"; then
+                  echo "Updating $sub/autograder.py"
+                  cp /tmp/autograder.py "$sub/autograder.py"
+                  CHANGED=1
+                fi
+              done
+            fi
+          done
+
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+
+      - name: Show diff
+        if: steps.sync.outputs.changed == '1'
+        run: git diff --stat
+
+      - name: Commit and push
+        if: steps.sync.outputs.changed == '1' && inputs.dry_run == false
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A -- ':(exclude,glob)**/.autograder-sync-ignore'
+          git commit -m "Sync autograder.py from KatyISD/gh-autograder"
+          git push

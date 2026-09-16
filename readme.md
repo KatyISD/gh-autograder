@@ -66,9 +66,9 @@ tests:
 | --- | --- | --- |
 | name |  | Required. Display name of the test |
 | id |  | Required. Slugged id for the test. Needs to be legal as a dictionary key. |
-| type | io | Type of test. Valid options: io - Input output tests, junit4 - JUnit 4 tests, junit or junit5 - JUnit 5 tests |
+| type | io | Type of test. Valid options: io - Input output tests, junit4 - JUnit 4 tests, junit or junit5 - JUnit 5 tests, unittest, python, or pyunit - Python unittest tests |
 | points | 0 | Number of points for a successful submission | 
-| timeout | 10 or 60 | Number of seconds before a test times out and is considered a failure. 10 second default for io and 60 second default for JUnit tests. | 
+| timeout | 10 or 60 | Number of seconds before a test times out and is considered a failure. 10 second default for io, 60 second default for JUnit and Python unittest tests. | 
 | partial-credit | false | Whether tests are all-or-nothing or they can get partial credit. Currently only valid for unit tests, io tests are always all-or-nothing. |
 
 ### IO Settings
@@ -117,6 +117,25 @@ When input or output is a multiline string these affect each line independently,
 > [!TIP]
 > The autograder copies any files from the `autograders/<slug>/` folder to the working directly when running tests, but will overwrite any existing files. This gives you the ability to create new test files that your students don't have access to. For example, if you leave `test-class` empty and give your students `TestA.java`, only `TestA` will run when they test. But you can have `TestB.java` in your autograders folder and both A & B will run on submission. You can also have more tests in a single file with the same name. Ex:, give students `TestC.java` with 5 tests, but have a `TestC.java` in the autograders folder with 20 tests and they'll be graded with the 20 test version when submitted. 
 
+### Python Unit Test Settings
+
+Use `type: unittest` (`python` and `pyunit` are accepted as aliases) to grade with Python's built-in `unittest` module instead of an `io` test. Results are collected and scored the same way as JUnit tests (including `partial-credit`), so the shared settings table above applies here too.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| test-class | | Dotted path to a specific test target, e.g. `tests.test_module` or `tests.test_module.TestClass`, or a single method with `tests.test_module.TestClass.test_method`. If left blank, tests are discovered automatically instead. |
+| test-path | . | Directory to start test discovery from when `test-class` isn't set. Same idea as `python -m unittest discover -s`. |
+| test-pattern | test*.py | Filename pattern used during discovery when `test-class` isn't set. Same idea as `python -m unittest discover -p`. |
+| lib-path | | Path, relative to the repository root, added to `PYTHONPATH` during the test run. These files are in the student repository, so they will have access. |
+| setup | | Command run before the student code, useful for any prep steps needed before tests run. |
+| setup-timeout | 60 | Number of seconds before the `setup` command times out and is considered a failure. |
+
+> [!NOTE]
+> The autograder installs the `unittest-xml-reporting` package automatically the first time a Python unit test runs, so no extra setup is needed in `setup` for it.
+
+> [!TIP]
+> Just like the JUnit tip above, files from `autograders/<slug>/` are copied into the working directory before tests run and will overwrite matching student files. This lets you ship a hidden, more complete version of a test file (e.g. give students a `test_hello.py` with a few tests, keep a fuller `test_hello.py` in the autograders folder, and the fuller version is what actually gets graded).
+
 ### Example yaml file
 
 ```yaml
@@ -148,6 +167,13 @@ tests:
       timeout: 60
       partial-credit: true
       pints: 40
+    - name: Python Unit Test
+      id: python-unit-test
+      type: unittest
+      test-path: tests
+      timeout: 60
+      partial-credit: true
+      points: 40
 ```
 
 ## GitHub Classroom .yaml files
@@ -157,3 +183,14 @@ If you're already using either the `compscirocks@autograding-io-grader` or `comp
 The script will automatically parse and convert the old format to new when students submit. There's no reason to convert it yourself. 
 
 Once you copy it to your `classroom50` repository you should remove the orignal from the student template repository. 
+
+## Keeping autograder.py up to date
+
+Updating `autograder.py` by hand in every classroom and `autograders/<slug>/` folder gets tedious once you have more than a couple of classrooms. [sync-autograder.yml](sync-autograder.yml) in this repository is a GitHub Actions workflow template that automates it.
+
+It isn't active here - copy it into your `classroom50` repository as `.github/workflows/sync-autograder.yml`, then run it manually from that repo's Actions tab whenever you want to push out the latest `autograder.py`. It never runs on its own and never adds `autograder.py` to a folder that doesn't already have it - it only overwrites copies that already exist, in:
+
+- `<classroom>/autograder.py`
+- `<classroom>/autograders/<assignment-slug>/autograder.py`
+
+To keep a specific folder's copy from being overwritten, drop an empty `.autograder-sync-ignore` file in it (works in either a classroom folder or an `autograders/<slug>/` folder). You can also skip whole top-level classroom folders for a single run with the workflow's `extra_excludes` input.
