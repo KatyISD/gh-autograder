@@ -392,6 +392,32 @@ def summarize_maven_failure(output):
 
     return output.strip()
 
+_JAVAC_ERROR_LOCATION = re.compile(r'^\[ERROR\]\s+(.+\.java):\[(\d+),(\d+)\]\s')
+
+def annotate_compile_errors_with_source(summary, max_annotations=20):
+    """
+    The maven-compiler-plugin's diagnostics are just "file:[line,col] message",
+    unlike plain javac which also shows the offending source line and a caret.
+    Re-attach that line by reading it straight out of the student's file, which
+    is still on disk at this point (only `target/` has been cleaned).
+    """
+    out = []
+    annotated = 0
+    for line in summary.splitlines():
+        out.append(line)
+        match = _JAVAC_ERROR_LOCATION.match(line)
+        if not match or annotated >= max_annotations:
+            continue
+        file_path, line_no, col_no = match.groups()
+        try:
+            source_line = Path(file_path).read_text().splitlines()[int(line_no) - 1]
+        except (OSError, IndexError, UnicodeDecodeError):
+            continue
+        out.append(source_line)
+        out.append(' ' * (int(col_no) - 1) + '^')
+        annotated += 1
+    return '\n'.join(out)
+
 def score_xml_test_results(xml_files, test, result, label='Test', on_missing=None, summarize_build_output=None):
     """
     Shared scoring/markdown logic for any test type that reports results as
@@ -430,8 +456,8 @@ def score_xml_test_results(xml_files, test, result, label='Test', on_missing=Non
             build_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
             if summarize_build_output:
                 build_output = summarize_build_output(build_output)
-            ret["message"] = f"{label} build failed"
-            ret["markdown"] = f"**{label} build failed** (exit code {result.returncode}) before any tests could run.\n\n```\n{build_output}\n```"
+            ret["message"] = "Build failed"
+            ret["markdown"] = f"**Build failed** (exit code {result.returncode}) before any tests could run.\n\n```\n{build_output}\n```"
         else:
             ret["message"] = f"No {label} test results found."
             ret["markdown"] = f"No {label} test results found.\n\nNo XML reports found\n\n```\n{result.stderr}\n```"
@@ -602,7 +628,7 @@ def test_junit4(test):
         xml_files, test, result,
         label='JUnit',
         on_missing=print_pom_debug,
-        summarize_build_output=summarize_maven_failure,
+        summarize_build_output=lambda output: annotate_compile_errors_with_source(summarize_maven_failure(output)),
     )
 
     subprocess.run(['mvn', 'clean'], capture_output=True, text=True, shell=False)
