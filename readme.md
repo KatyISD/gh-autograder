@@ -60,6 +60,25 @@ tests:
       <...> more settings
 ```
 
+### Global Setup / Cleanup
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| setup | | Shell command run once before any tests run, e.g. to seed a database or build a shared resource. If it fails (non-zero exit, exception, or timeout) every test is reported as failed with the setup output shown, and none of them actually run. |
+| setup-timeout | 60 | Number of seconds before `setup` times out and is considered a failure. |
+| cleanup | | Shell command run once after all tests finish, e.g. to tear down whatever `setup` created. Runs even if `setup` or a test failed. Its own failure doesn't change any test's score. |
+| cleanup-timeout | 60 | Number of seconds before `cleanup` times out and is considered a failure. |
+
+These run once for the whole file and are unrelated to the per-test `setup`/`cleanup` fields available on every test type (see Shared Settings below), which run before/after just that one test.
+
+```yaml
+setup: ./prepare.sh
+cleanup: ./teardown.sh
+tests:
+    - name: Test 1
+      <...> more settings
+```
+
 ### Shared Setings
 
 | Setting | Default | Notes |
@@ -70,13 +89,19 @@ tests:
 | points | 0 | Number of points for a successful submission | 
 | timeout | 10 or 60 | Number of seconds before a test times out and is considered a failure. 10 second default for io, 60 second default for JUnit and Python unittest tests. | 
 | partial-credit | false | Whether tests are all-or-nothing or they can get partial credit. Currently only valid for unit tests, io tests are always all-or-nothing. |
+| setup | | Shell command run before this specific test (e.g. per-test compilation or fixture prep). If it fails (non-zero exit, exception, or timeout) the test is reported as failed with the setup output shown, and the test's own command never runs. Available on all test types. |
+| setup-timeout | same as `timeout` (io, junit4/junit5), or 60 (unittest) | Number of seconds before `setup` times out and is considered a failure. |
+| cleanup | | Shell command run after this specific test, whether it passed or failed (e.g. to tear down whatever `setup` created). Its own failure doesn't change the test's score. Available on all test types. |
+| cleanup-timeout | same as `timeout` (io, junit4/junit5), or 60 (unittest) | Number of seconds before `cleanup` times out and is considered a failure. |
+
+> [!NOTE]
+> This is separate from the top-level `setup`/`cleanup` described above, which run once for the whole file rather than per test.
 
 ### IO Settings
 
 | Setting | Default | Notes |
 | --- | --- | --- |
 | command | | Required. Command to run the student code. Typically something like `java SomeClass` or `python some_code.py` |
-| setup-command | | Runs before the student code to get code ready. Typically used for compilation like `javac SomeClass.java`. | 
 | input | | Input for the running program. Will be passes as `stdin` unless `filename` is also defined. |
 | input-file | | If defined then this file will be loaded and stored in the `input` property, overwriting anything that's there. The path is relative to the running code so it can be in either the student repository or the `autograder/<slug>/` folder. |
 | filename | | If defined then `input` will be stored in this filename and `stdin` will be an empty string. |
@@ -127,8 +152,6 @@ Use `type: unittest` (`python` and `pyunit` are accepted as aliases) to grade wi
 | test-path | . | Directory to start test discovery from when `test-class` isn't set. Same idea as `python -m unittest discover -s`. |
 | test-pattern | test*.py | Filename pattern used during discovery when `test-class` isn't set. Same idea as `python -m unittest discover -p`. |
 | lib-path | | Path, relative to the repository root, added to `PYTHONPATH` during the test run. These files are in the student repository, so they will have access. |
-| setup | | Command run before the student code, useful for any prep steps needed before tests run. |
-| setup-timeout | 60 | Number of seconds before the `setup` command times out and is considered a failure. |
 
 > [!NOTE]
 > The autograder installs the `unittest-xml-reporting` package automatically the first time a Python unit test runs, so no extra setup is needed in `setup` for it.

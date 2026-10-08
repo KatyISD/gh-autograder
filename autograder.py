@@ -137,11 +137,6 @@ def test_io(test):
 
     # Set defaults
     ret = {
-        "setup": {
-            "exit": 0,
-            "stdout": "",
-            "stderr": "",
-        },
         "command": {
             "exit": 0,
             "stdout": "",
@@ -150,205 +145,191 @@ def test_io(test):
         "points": 0,
         "message": "",
         "markdown": "",
-        "success": True, 
+        "success": True,
     }
-    
-    # Copy data file or stdin
-    stdin = ""
-    if test.get('input', ''):
-        if test.get("filename"):
-            if os.path.exists(test["filename"]):
-                os.remove(test["filename"])
-            with open(test["filename"], 'w') as f:
-                f.write(test.get("input", ""))
+
+    try:
+        # Copy data file or stdin
+        stdin = ""
+        if test.get('input', ''):
+            if test.get("filename"):
+                if os.path.exists(test["filename"]):
+                    os.remove(test["filename"])
+                with open(test["filename"], 'w') as f:
+                    f.write(test.get("input", ""))
+            else:
+                stdin = test.get("input", "")
+
+        # Run setup command
+        if test.get("setup"):
+            success, failure_markdown = run_global_script(
+                test.get("setup"), test.get('setup-timeout', test.get('timeout', 10)), 'Setup'
+            )
+            if not success:
+                ret["success"] = False
+                ret["message"] = "Setup command failed"
+                ret["markdown"] = failure_markdown
+                return ret
+
+        # Run the command
+        if test.get("command"):
+            try:
+                result = subprocess.run(test.get("command"), capture_output=True, text=True, shell=True, input=stdin, timeout=test.get("timeout", 10))
+            except subprocess.TimeoutExpired as e:
+                ret["command"]["exit"] = -1
+                ret["command"]["stdout"] = e.stdout
+                ret["command"]["stderr"] = e.stderr
+                ret["success"] = False
+                ret["message"] = f"Command timed out after {test.get('timeout', 0)} seconds."
+                ret["markdown"] = f"Command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```"
+                return ret
+            except Exception as e:
+                ret["command"]["exit"] = -1
+                ret["command"]["stdout"] = ""
+                ret["command"]["stderr"] = str(e)
+                ret["success"] = False
+                ret["message"] = f"Command failed with exception: {str(e)}"
+                ret["markdown"] = f"Command failed with exception: {str(e)}\n\n```\n{str(e)}\n```"
+                return ret
+            ret["command"]["exit"] = result.returncode
+            ret["command"]["stdout"] = result.stdout
+            ret["command"]["stderr"] = result.stderr
+
+            if result.returncode != 0:
+                ret["success"] = False
+                ret["message"] = result.stderr
+                ret["markdown"] = f"Command failed with exit code {result.returncode}.\n\n```\n{result.stderr}\n```"
+                return ret
+
+        # Compare output
+        if test.get("comparison", 'exact') == "exact":
+            expected = test.get('output', '')
+            actual = ret["command"]["stdout"]
+
+            if test.get('exact', {}).get('ignore-case', False):
+                expected = expected.lower()
+                actual = actual.lower()
+
+            if expected.rstrip() != actual.rstrip():
+                ret["success"] = False
+                ret["message"] = "Output did not match expected output"
+                ret["markdown"] = markdown_io(
+                    message = 'Output did not match expected output',
+                    input = test.get('input'),
+                    output = ret['command']['stdout'],
+                    expected = test.get('output')
+                )
+            else:
+                ret["success"] = True
+                ret["message"] = "Output matched expected output"
+                ret["markdown"] = markdown_io(
+                    message = 'Output matched expected output',
+                    input = test.get('input'),
+                    output = ret['command']['stdout'],
+                    expected = test.get('output')
+                )
+        elif test.get("comparison") == "contains":
+            expected = test.get("output", "")
+            actual = ret["command"]["stdout"]
+
+            if test.get('contains', {}).get('ignore-case', False):
+                expected = expected.lower()
+                actual = actual.lower()
+
+            if test.get("output", "") not in ret["command"]["stdout"]:
+                ret["success"] = False
+                ret["message"] = "Output did not contain expected contents"
+                ret["markdown"] = markdown_io(
+                    message = "Output does not contain expected contents",
+                    input = test.get('input'),
+                    output = ret['command']['stdout'],
+                    expected = test.get('output')
+                )
+            else:
+                ret["success"] = True
+                ret["message"] = "Output contained expected output."
+                ret["markdown"] = f"Output contained expected output.\n\nInput:\n```{test.get('input', '')}\n```\n\nExpected to contain:\n```\n{test.get('output', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
+
+        elif test.get("comparison") == "regex":
+            if not re.search(test.get("regex", ""), ret["command"]["stdout"]):
+                ret["success"] = False
+                ret["message"] = "Output did not match regular expression"
+                ret["markdown"] = markdown_io(
+                    message = "Output did not match regular expression",
+                    input =  test.get('regex'),
+                    output = ret['command']['stdout'],
+                    expected = test.get('output', '')
+                )
+            else:
+                ret["success"] = True
+                ret["message"] = "Output matched expected regular expression"
+                ret["markdown"] =  markdown_io(
+                    message="Output matched expected regex",
+                    input=test.get('regex'),
+                    output=ret['command']['stdout'],
+                    expected=test.get('output')
+                )
+
+        elif test.get("comparison") == "loose":
+            output = ret["command"]["stdout"].rstrip()
+            expected = str(test.get("output", "")).rstrip()
+
+            # Make an array and then filter out blank lines if ignore-blank is set
+            output_lines = output.splitlines()
+            expected_lines = expected.splitlines()
+
+            if test.get("loose", {}).get("ignore-blank", True):
+                output_lines = [line for line in output_lines if line.strip() != ""]
+                expected_lines = [line for line in expected_lines if line.strip() != ""]
+
+            # Trim lines if set
+            if test.get("loose", {}).get("trim", False):
+                output_lines = [line.strip() for line in output_lines]
+                expected_lines = [line.strip() for line in expected_lines]
+
+            if test.get("loose", {}).get("ltrim", False):
+                output_lines = [line.lstrip() for line in output_lines]
+                expected_lines = [line.lstrip() for line in expected_lines]
+
+            if test.get("loose", {}).get("rtrim", True):
+                output_lines = [line.rstrip() for line in output_lines]
+                expected_lines = [line.rstrip() for line in expected_lines]
+
+            # Squash spaces if set, leave one space no matter how many are there
+            if test.get("loose", {}).get("squash-spaces", True):
+                output_lines = [re.sub(r'[ \t]+', ' ', line) for line in output_lines]
+                expected_lines = [re.sub(r'[ \t]+', ' ', line) for line in expected_lines]
+
+            if output_lines != expected_lines:
+                ret["success"] = False
+                ret["message"] = "Output does not match"
+                ret["markdown"] = markdown_io(
+                    message="Output does not match expected output",
+                    input=test.get('input'),
+                    output=ret['command']['stdout'],
+                    expected=test.get('output')
+                )
+            else:
+                ret["success"] = True
+                ret["message"] = "Output matches"
+                ret["markdown"] = markdown_io(
+                    message="Output matched expected output",
+                    input=test.get('input'),
+                    output=ret['command']['stdout'],
+                    expected=test.get('output')
+                )
+
         else:
-            stdin = test.get("input", "")
-
-    # Run setup command
-    if test.get("setup"):
-        try:
-            result = subprocess.run(test.get("setup"), capture_output=True, text=True, shell=True, timeout=test.get("timeout", 10))
-        except subprocess.TimeoutExpired as e:
-            ret["setup"]["exit"] = -1
-            ret["setup"]["stdout"] = e.stdout
-            ret["setup"]["stderr"] = e.stderr
             ret["success"] = False
-            ret["message"] = f"Setup command timed out after {test.get('timeout', 0)} seconds."
-            ret["markdown"] = f"Setup command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```"
-            return ret
-        except Exception as e:
-            ret["setup"]["exit"] = -1
-            ret["setup"]["stdout"] = ""
-            ret["setup"]["stderr"] = str(e)
-            ret["success"] = False
-            ret["message"] = f"Setup command failed with exception: {str(e)}"
-            ret["markdown"] = f"Setup command failed with exception: {str(e)}\n\n```\n{str(e)}\n```"
-            return ret
-        ret["setup"]["exit"] = result.returncode
-        ret["setup"]["stdout"] = result.stdout
-        ret["setup"]["stderr"] = result.stderr
+            ret["message"] = f"Unknown comparison method: {test.get('comparison')}"
+            ret["markdown"] = f"Unknown comparison method: {test.get('comparison')}"
 
-        if result.returncode != 0:
-            ret["success"] = False
-            ret["message"] = result.stderr
-            ret["markdown"] = f"Setup command failed with exit code {result.returncode}.\n\n```\n{result.stderr}\n```"
-            return ret
-
-    # Run the command
-    if test.get("command"):
-        try:
-            result = subprocess.run(test.get("command"), capture_output=True, text=True, shell=True, input=stdin, timeout=test.get("timeout", 10))
-        except subprocess.TimeoutExpired as e:
-            ret["command"]["exit"] = -1
-            ret["command"]["stdout"] = e.stdout
-            ret["command"]["stderr"] = e.stderr
-            ret["success"] = False
-            ret["message"] = f"Command timed out after {test.get('timeout', 0)} seconds."
-            ret["markdown"] = f"Command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```"
-            return ret
-        except Exception as e:
-            ret["command"]["exit"] = -1
-            ret["command"]["stdout"] = ""
-            ret["command"]["stderr"] = str(e)
-            ret["success"] = False
-            ret["message"] = f"Command failed with exception: {str(e)}"
-            ret["markdown"] = f"Command failed with exception: {str(e)}\n\n```\n{str(e)}\n```"
-            return ret
-        ret["command"]["exit"] = result.returncode
-        ret["command"]["stdout"] = result.stdout
-        ret["command"]["stderr"] = result.stderr
-
-        if result.returncode != 0:
-            ret["success"] = False
-            ret["message"] = result.stderr
-            ret["markdown"] = f"Command failed with exit code {result.returncode}.\n\n```\n{result.stderr}\n```"
-            return ret
-
-    # Compare output
-    if test.get("comparison", 'exact') == "exact":
-        expected = test.get('output', '')
-        actual = ret["command"]["stdout"]
-
-        if test.get('exact', {}).get('ignore-case', False):
-            expected = expected.lower()
-            actual = actual.lower()
-
-        if expected.rstrip() != actual.rstrip():
-            ret["success"] = False
-            ret["message"] = "Output did not match expected output"
-            ret["markdown"] = markdown_io(
-                message = 'Output did not match expected output',
-                input = test.get('input'),
-                output = ret['command']['stdout'],
-                expected = test.get('output')
+        return ret
+    finally:
+        if test.get("cleanup"):
+            run_global_script(
+                test.get("cleanup"), test.get('cleanup-timeout', test.get('timeout', 10)), 'Cleanup'
             )
-        else:
-            ret["success"] = True
-            ret["message"] = "Output matched expected output"
-            ret["markdown"] = markdown_io(
-                message = 'Output matched expected output',
-                input = test.get('input'),
-                output = ret['command']['stdout'],
-                expected = test.get('output')
-            )
-    elif test.get("comparison") == "contains":
-        expected = test.get("output", "")
-        actual = ret["command"]["stdout"]
-
-        if test.get('contains', {}).get('ignore-case', False):
-            expected = expected.lower()
-            actual = actual.lower()
-
-        if test.get("output", "") not in ret["command"]["stdout"]:
-            ret["success"] = False
-            ret["message"] = "Output did not contain expected contents"
-            ret["markdown"] = markdown_io(
-                message = "Output does not contain expected contents",
-                input = test.get('input'),
-                output = ret['command']['stdout'],
-                expected = test.get('output')
-            )
-        else:
-            ret["success"] = True
-            ret["message"] = "Output contained expected output."
-            ret["markdown"] = f"Output contained expected output.\n\nInput:\n```{test.get('input', '')}\n```\n\nExpected to contain:\n```\n{test.get('output', '')}\n```\n\nYour Output:\n```\n{ret['command']['stdout']}\n```"
-
-    elif test.get("comparison") == "regex":
-        if not re.search(test.get("regex", ""), ret["command"]["stdout"]):
-            ret["success"] = False
-            ret["message"] = "Output did not match regular expression"
-            ret["markdown"] = markdown_io(
-                message = "Output did not match regular expression",
-                input =  test.get('regex'),
-                output = ret['command']['stdout'],
-                expected = test.get('output', '')
-            )
-        else:
-            ret["success"] = True
-            ret["message"] = "Output matched expected regular expression"
-            ret["markdown"] =  markdown_io(
-                message="Output matched expected regex",
-                input=test.get('regex'),
-                output=ret['command']['stdout'],
-                expected=test.get('output')
-            )           
-
-    elif test.get("comparison") == "loose":
-        output = ret["command"]["stdout"].rstrip()
-        expected = str(test.get("output", "")).rstrip()
-
-        # Make an array and then filter out blank lines if ignore-blank is set
-        output_lines = output.splitlines()
-        expected_lines = expected.splitlines()
-
-        if test.get("loose", {}).get("ignore-blank", True):
-            output_lines = [line for line in output_lines if line.strip() != ""]
-            expected_lines = [line for line in expected_lines if line.strip() != ""]
-
-        # Trim lines if set
-        if test.get("loose", {}).get("trim", False):
-            output_lines = [line.strip() for line in output_lines]
-            expected_lines = [line.strip() for line in expected_lines]
-        
-        if test.get("loose", {}).get("ltrim", False):
-            output_lines = [line.lstrip() for line in output_lines]
-            expected_lines = [line.lstrip() for line in expected_lines]
-
-        if test.get("loose", {}).get("rtrim", True):
-            output_lines = [line.rstrip() for line in output_lines]
-            expected_lines = [line.rstrip() for line in expected_lines]
-
-        # Squash spaces if set, leave one space no matter how many are there
-        if test.get("loose", {}).get("squash-spaces", True):
-            output_lines = [re.sub(r'[ \t]+', ' ', line) for line in output_lines]
-            expected_lines = [re.sub(r'[ \t]+', ' ', line) for line in expected_lines]
-
-        if output_lines != expected_lines:
-            ret["success"] = False
-            ret["message"] = "Output does not match"
-            ret["markdown"] = markdown_io(
-                message="Output does not match expected output",
-                input=test.get('input'),
-                output=ret['command']['stdout'],
-                expected=test.get('output')
-            )
-        else:
-            ret["success"] = True
-            ret["message"] = "Output matches"
-            ret["markdown"] = markdown_io(
-                message="Output matched expected output",
-                input=test.get('input'),
-                output=ret['command']['stdout'],
-                expected=test.get('output')
-            )
-            
-    else:
-        ret["success"] = False
-        ret["message"] = f"Unknown comparison method: {test.get('comparison')}"
-        ret["markdown"] = f"Unknown comparison method: {test.get('comparison')}"
-
-    
-    return ret
 
 _MAVEN_HELP_BOILERPLATE = (
     'Re-run Maven using',
@@ -600,40 +581,60 @@ def test_junit4(test):
     """
     build_pom(test)
 
-    mvn_command = ['mvn', 'clean', 'test']
-    if test.get('test-class', '') != '':
-        mvn_command.append(f'-Dtest={test.get("test-class")}')
-
     try:
-        result = subprocess.run(mvn_command, capture_output=True, text=True, shell=False, timeout=test.get("timeout", 60))
-    except subprocess.TimeoutExpired as e:
-        return {
-            "command": {"exit": -1, "stdout": e.stdout, "stderr": e.stderr},
-            "points": test.get('points', 0),
-            "score": 0,
-            "success": False,
-            "message": f"JUnit command timed out after {test.get('timeout', 0)} seconds.",
-            "markdown": f"JUnit command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```",
-        }
+        if test.get('setup'):
+            success, failure_markdown = run_global_script(
+                test.get('setup'), test.get('setup-timeout', test.get('timeout', 60)), 'Setup'
+            )
+            if not success:
+                return {
+                    "command": {"exit": -1, "stdout": "", "stderr": ""},
+                    "points": test.get('points', 0),
+                    "score": 0,
+                    "success": False,
+                    "message": "Setup command failed",
+                    "markdown": failure_markdown,
+                }
 
-    # Glob for the xml files
-    surefire_reports_dir = Path('target/surefire-reports')
-    xml_files = list(surefire_reports_dir.glob('TEST-*.xml'))
+        mvn_command = ['mvn', 'clean', 'test']
+        if test.get('test-class', '') != '':
+            mvn_command.append(f'-Dtest={test.get("test-class")}')
 
-    def print_pom_debug():
-        print('pom.xml contents')
-        print(Path('pom.xml').read_text())
+        try:
+            result = subprocess.run(mvn_command, capture_output=True, text=True, shell=False, timeout=test.get("timeout", 60))
+        except subprocess.TimeoutExpired as e:
+            return {
+                "command": {"exit": -1, "stdout": e.stdout, "stderr": e.stderr},
+                "points": test.get('points', 0),
+                "score": 0,
+                "success": False,
+                "message": f"JUnit command timed out after {test.get('timeout', 0)} seconds.",
+                "markdown": f"JUnit command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```",
+            }
 
-    ret = score_xml_test_results(
-        xml_files, test, result,
-        label='JUnit',
-        on_missing=print_pom_debug,
-        summarize_build_output=lambda output: annotate_compile_errors_with_source(summarize_maven_failure(output)),
-    )
+        # Glob for the xml files
+        surefire_reports_dir = Path('target/surefire-reports')
+        xml_files = list(surefire_reports_dir.glob('TEST-*.xml'))
 
-    subprocess.run(['mvn', 'clean'], capture_output=True, text=True, shell=False)
-    Path('pom.xml').unlink()  # Clean up the pom.xml after building it
-    return ret
+        def print_pom_debug():
+            print('pom.xml contents')
+            print(Path('pom.xml').read_text())
+
+        ret = score_xml_test_results(
+            xml_files, test, result,
+            label='JUnit',
+            on_missing=print_pom_debug,
+            summarize_build_output=lambda output: annotate_compile_errors_with_source(summarize_maven_failure(output)),
+        )
+        return ret
+    finally:
+        if test.get('cleanup'):
+            run_global_script(
+                test.get('cleanup'), test.get('cleanup-timeout', test.get('timeout', 60)), 'Cleanup'
+            )
+        subprocess.run(['mvn', 'clean'], capture_output=True, text=True, shell=False)
+        if Path('pom.xml').exists():
+            Path('pom.xml').unlink()  # Clean up the pom.xml after building it
 
 def test_python_unittest(test):
     """
@@ -666,47 +667,44 @@ def test_python_unittest(test):
             '-p', test.get('test-pattern', 'test*.py'),
         ]
 
-    # Run setup command, if it's there
-    setup_command = test.get('setup', '')
-    if setup_command:
-        setup_result = subprocess.run(
-            setup_command,
-            capture_output=True,
-            text=True,
-            shell=True,
-            env=env,
-            timeout=test.get('setup-timeout', 60)
-        )
+    try:
+        # Run setup command, if it's there
+        if test.get('setup'):
+            success, failure_markdown = run_global_script(
+                test.get('setup'), test.get('setup-timeout', 60), 'Setup', env=env
+            )
+            if not success:
+                return {
+                    "command": {"exit": -1, "stdout": "", "stderr": ""},
+                    "points": test.get("points", 0),
+                    "score": 0,
+                    "success": False,
+                    "message": "Setup command failed",
+                    "markdown": failure_markdown,
+                }
 
-        if setup_result.returncode != 0:
-             return {
-                "command": {"exit": setup_result.returncode, "stdout": setup_result.stdout, "stderr": setup_result.stderr},
-                "points": test.get("points", 0),
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, shell=False, env=env, timeout=test.get('timeout', 60))
+        except subprocess.TimeoutExpired as e:
+            return {
+                "command": {"exit": -1, "stdout": e.stdout, "stderr": e.stderr},
+                "points": test.get('points', 0),
                 "score": 0,
                 "success": False,
-                "message": "Setup command failed before running tests.",
-                "markdown": f"Setup command failed...\n\n```{setup_result.stderr}```",
+                "message": f"Python unittest command timed out after {test.get('timeout', 0)} seconds.",
+                "markdown": f"Python unittest command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```",
             }
 
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, shell=False, env=env, timeout=test.get('timeout', 60))
-    except subprocess.TimeoutExpired as e:
-        return {
-            "command": {"exit": -1, "stdout": e.stdout, "stderr": e.stderr},
-            "points": test.get('points', 0),
-            "score": 0,
-            "success": False,
-            "message": f"Python unittest command timed out after {test.get('timeout', 0)} seconds.",
-            "markdown": f"Python unittest command timed out after {test.get('timeout', 0)} seconds.\n\n```\n{e.stderr}\n```",
-        }
+        xml_files = list(reports_dir.glob('TEST-*.xml')) if reports_dir.exists() else []
 
-    xml_files = list(reports_dir.glob('TEST-*.xml')) if reports_dir.exists() else []
-
-    ret = score_xml_test_results(xml_files, test, result, label='Python unittest')
-
-    shutil.rmtree(reports_dir, ignore_errors=True)
-
-    return ret
+        ret = score_xml_test_results(xml_files, test, result, label='Python unittest')
+        return ret
+    finally:
+        if test.get('cleanup'):
+            run_global_script(
+                test.get('cleanup'), test.get('cleanup-timeout', 60), 'Cleanup', env=env
+            )
+        shutil.rmtree(reports_dir, ignore_errors=True)
 
 def markdown_io(message = 'Output matched', input='', output='', expected=''):
     md = ''
@@ -900,7 +898,26 @@ def build_pom(test):
 </project>"""
     Path('pom.xml').write_text(xml)
 
-def main(): 
+def run_global_script(command, timeout, label, env=None):
+    """
+    Runs a one-off shell command, used for both tests.yaml's top-level
+    `setup`/`cleanup` (run once for the whole file) and each test type's own
+    per-test `setup`/`cleanup` (run just before/after that one test).
+    """
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, shell=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as e:
+        return False, f"**{label} timed out** after {timeout} seconds.\n\n```\n{e.stderr or ''}\n```"
+    except Exception as e:
+        return False, f"**{label} failed with exception:** {str(e)}"
+
+    if result.returncode != 0:
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        return False, f"**{label} failed** (exit code {result.returncode})\n\n```\n{output}\n```"
+
+    return True, None
+
+def main():
     # Check if tests.yaml or tests.yml exists in the current directory
     # or its __file__ parent, start with parent since that's more likely
     support_dir = assignment_dir()
@@ -942,6 +959,13 @@ def main():
     tests = normalize_tests(tests)
     tests = load_io(tests)
 
+    setup_failure_markdown = None
+    if tests.get('setup'):
+        print('Running global setup')
+        success, failure_markdown = run_global_script(tests['setup'], tests.get('setup-timeout', 60), 'Setup')
+        if not success:
+            setup_failure_markdown = failure_markdown
+
     status = {
         "points": 0,
         "score": 0,
@@ -951,58 +975,72 @@ def main():
 
     test_info = []
 
-    # Iterate through tests and run the individual tests
-    for t in tests.get('tests', []):
-        print(f"Running test: {t.get('name', '')} ({t.get('type', 'io')})")
-        status["tests_run"] += 1
-        status["points_available"] += t.get("points", 0)
+    try:
+        # Iterate through tests and run the individual tests
+        for t in tests.get('tests', []):
+            print(f"Running test: {t.get('name', '')} ({t.get('type', 'io')})")
+            status["tests_run"] += 1
+            status["points_available"] += t.get("points", 0)
 
-        test_results = {
-            "test-name": t.get("name", ""),
-            "passed": False,
-            "score": 0,
-            "max-score": t.get("points", 0),
-            "message": "",
-            "markdown": "",
-        }
+            test_results = {
+                "test-name": t.get("name", ""),
+                "passed": False,
+                "score": 0,
+                "max-score": t.get("points", 0),
+                "message": "",
+                "markdown": "",
+            }
 
-        # IO is default test type
-        if t.get("type", "io") == "io":
-            result = test_io(t)
+            # Global setup failed, so no test can meaningfully run. Still
+            # report one row per configured test (rather than aborting the
+            # whole run) so the totals/points-available stay accurate.
+            if setup_failure_markdown:
+                test_results["message"] = "Setup failed"
+                test_results["markdown"] = setup_failure_markdown
+                test_info.append(test_results)
+                continue
 
-            if result["success"]:
-                status["score"] += t.get("points", 0)
-                test_results["passed"] = True
-                test_results["score"] = t.get("points", 0)
+            # IO is default test type
+            if t.get("type", "io") == "io":
+                result = test_io(t)
 
-            test_results["markdown"] = result.get("markdown", "")
-            test_results["message"] = result.get("message", "")
-        elif t.get('type') in ['junit', 'junit4', 'junit5']:
-            result = test_junit4(t)
-            if result['success']:
-                test_results['passed'] = True
-            # Partial-credit scoring divides points across test cases, which
-            # always yields a float in Python (even for a whole number like
-            # 10.0) - result.json requires score/max-score to be strict ints,
-            # so round to a whole point here before it's ever written out.
-            score = round(result.get('score', 0))
-            status['score'] += score
-            test_results['score'] = score
+                if result["success"]:
+                    status["score"] += t.get("points", 0)
+                    test_results["passed"] = True
+                    test_results["score"] = t.get("points", 0)
 
-            test_results['markdown'] = result.get('markdown', '')
-            test_results['message'] = result.get('message', '')
-        elif t.get('type') in ['unittest', 'python', 'pyunit']:
-            result = test_python_unittest(t)
-            if result['success']:
-                test_results['passed'] = True
-            score = round(result.get('score', 0))
-            status['score'] += score
-            test_results['score'] = score
+                test_results["markdown"] = result.get("markdown", "")
+                test_results["message"] = result.get("message", "")
+            elif t.get('type') in ['junit', 'junit4', 'junit5']:
+                result = test_junit4(t)
+                if result['success']:
+                    test_results['passed'] = True
+                # Partial-credit scoring divides points across test cases, which
+                # always yields a float in Python (even for a whole number like
+                # 10.0) - result.json requires score/max-score to be strict ints,
+                # so round to a whole point here before it's ever written out.
+                score = round(result.get('score', 0))
+                status['score'] += score
+                test_results['score'] = score
 
-            test_results['markdown'] = result.get('markdown', '')
-            test_results['message'] = result.get('message', '')
+                test_results['markdown'] = result.get('markdown', '')
+                test_results['message'] = result.get('message', '')
+            elif t.get('type') in ['unittest', 'python', 'pyunit']:
+                result = test_python_unittest(t)
+                if result['success']:
+                    test_results['passed'] = True
+                score = round(result.get('score', 0))
+                status['score'] += score
+                test_results['score'] = score
 
-        test_info.append(test_results)
+                test_results['markdown'] = result.get('markdown', '')
+                test_results['message'] = result.get('message', '')
+
+            test_info.append(test_results)
+    finally:
+        if tests.get('cleanup'):
+            print('Running global cleanup')
+            run_global_script(tests['cleanup'], tests.get('cleanup-timeout', 60), 'Cleanup')
 
     # Tests have run, create the results.json file
     data = {
